@@ -1,159 +1,233 @@
-#include <Wire.h> 
+#include <Wire.h>
 #include <Q2HX711.h>
 #include <LiquidCrystal_I2C.h>
 
-// Juiste LCD library installeren:
-// ga naar <sketch directory>/libraries
-// maak dir LiquidCrystal_I2C aan
-// cd LiquidCrystal_I2C
-// git clone https://github.com/fdebrabander/Arduino-LiquidCrystal-I2C-library
-// cd Arduino-LiquidCrystal-I2C-library
-// mv * ..
-// cd ..
-// rm -rf Arduino-LiquidCrystal-I2C-library
-LiquidCrystal_I2C lcd(0x27, 16, 2);  // set the LCD address to 0x27 for a 16 chars and 2 line display
+// set the LCD address to 0x27 for a 16 chars and 2 line display
+LiquidCrystal_I2C lcd(0x27, 16, 2);
 
-// Q2HX711.DOUT  - pin 
-// Q2HX711.PD_SCK - pin 
+
+// Q2HX711.DOUT  - pin
+// Q2HX711.PD_SCK - pin
 Q2HX711 scale(3, 4);
+
+
 // initialize the library with the numbers of the interface pins
 
-
 //int pinOutPiezo = 9;
-int pinOutPump = 5;
+int PUMP = 5;
 //int pinOutLedFill = 10;
 //int pinOutLedPanic = 13;
-int pinInCalibrate = 10;
-int pinInPanic = 13; // witte knopje
-int pinInStart = 11; 
-int pinInExtra = 12; 
+int BTN_CALIBRATE = 10; // Rood
+int BTN_STOP = 13; // Wit
+int BTN_FILL = 11; // Geel
+int BTN_FLUSH = 12; // Blauw
 
 const byte STATE_WAIT = 1;
 const byte STATE_FILL = 2;
-const byte STATE_PANIC = 3;
+const byte STATE_CALIBRATE = 3;
+const byte STATE_FLUSH = 4;
 
 volatile byte state = STATE_WAIT;
-volatile int counter = 0;
-int buttonstate = LOW;
-float tarra = 0;
 
-void fles_vol() {
-  /*Tone needs 2 arguments, but can take three
-    1) Pin#
-    2) Frequency (Hz) - this is in hertz (cycles per second) which determines the pitch of the noise made
-    3) Duration (ms) - how long teh tone plays
-  */
-  analogWrite(pinOutPump, 0);
-//  tone(pinOutPiezo, 1000, 400);
-//  delay(600);
-//  tone(pinOutPiezo, 1040, 400);
-//  delay(600);
-//  tone(pinOutPiezo, 1080, 400);
+// How many scale samples should we take for calibration?
+int N_SCALE_SAMPLES = 20;
 
-  state = STATE_WAIT;
+float TARE = 0.0;
+float MAX_WEIGHT = 0.0;
+
+
+/**
+ * Show message on LCD screen. Clean up screen and move to 0,0.
+ */
+void screen(String msg) {
+
+  lcd.clear();
+  lcd.print(msg);
 }
 
-void panic(){
-  // catch the interrupt. Let the loop handle it
-  state = STATE_PANIC;
+
+/**
+ * Print on second line of screen.
+ */
+void screen2(String msg) {
+
+  lcd.setCursor(0, 1);
+  lcd.print(msg);
 }
-  
+
+
+/**
+ * Log to both screen and serial port.
+ */
+void log(String msg) {
+
+  Serial.println(msg);
+}
+
+
+void log_and_screen(String msg) {
+
+  log(msg);
+  screen(msg);
+}
+
+void log_and_screen2(String msg) {
+
+  log(msg);
+  screen2(msg);
+}
+
+
 void setup() {
 
+  // Set baud rate
   Serial.begin(38400);
-  Serial.println("LCD Demo");
-
-  lcd.begin();                      // initialize the lcd 
-  Serial.println("init");
+  lcd.begin();
   lcd.backlight();
-  Serial.println("backlight");
-//
-//  lcd.clear();
-//  Serial.println("clear");
-//  lcd.setCursor(0,0);
-//  lcd.print("Hello, world!");
-//  Serial.println("Hello there");
 
+  log("Bottelmachine MK6.66");
 
-  
-  // put your setup code here, to run once:
-//  pinMode(pinOutPiezo, OUTPUT);
-  pinMode(pinOutPump, OUTPUT);
-//  pinMode(pinOutLedFill, OUTPUT);
-//  pinMode(pinOutLedPanic, OUTPUT);
-  
-  pinMode(pinInCalibrate, INPUT);
-  pinMode(pinInPanic, INPUT);
-  pinMode(pinInStart, INPUT);
-  pinMode(pinInExtra, INPUT);
-  
+  delay(2000);
+
+  pinMode(PUMP, OUTPUT);
+  // pinMode(pinOutLedFill, OUTPUT);
+  // pinMode(pinOutLedPanic, OUTPUT);
+  pinMode(BTN_CALIBRATE, INPUT);
+  pinMode(BTN_STOP, INPUT);
+  pinMode(BTN_FILL, INPUT);
+  pinMode(BTN_FLUSH, INPUT);
+
   // interrupt #0 = digital pin 2 (on Uno)
   // interrupt #1 = digital pin 3 (on Uno)
   // attachInterrupt(0, panic, RISING);
-  
-//  fles_vol();
 
-  Serial.println("HX711 Demo");
+  calibrate_tare();
 
-  Serial.println("Before setting up the scale:");
-  Serial.print("read: \t\t");
-
-  tarra = 0.0;
-  for (int i=0; i<20; i++){
-    tarra += scale.read();      // print a raw reading from the ADC
-  }
-  tarra = tarra / 20.0;
-  Serial.print("Tarra = ");
-  Serial.println(tarra);
   delay(1000);
 }
 
+
+void calibrate_tare() {
+
+  log_and_screen("Calibrating tare...");
+
+  TARE = 0.0;
+
+  // Do 20 readings and take the average as the tare
+  for (int i = 0; i < N_SCALE_SAMPLES; i++){
+    TARE += scale.read();
+  }
+
+  TARE = TARE / float(N_SCALE_SAMPLES);
+
+  log_and_screen2("Tare: " + String(TARE));  
+}
+
+
+/**
+ * Determine the weight of one bottle, filled
+ */
+void calibrate() {
+
+  log_and_screen("Calibrating fill weight...");
+
+  MAX_WEIGHT = 0.0;
+
+  // Do 20 readings and take the average as the fill weight
+  for (int i = 0; i < N_SCALE_SAMPLES; i++){
+    MAX_WEIGHT += scale.read();
+  }
+
+  MAX_WEIGHT = (MAX_WEIGHT / float(N_SCALE_SAMPLES)) - TARE;
+
+  log_and_screen2("Fill weight: " + String(MAX_WEIGHT));
+}
+
+
+float get_weight() {
+
+  return scale.read() - TARE;
+}
+
+
+boolean on(int btn) {
+
+  return digitalRead(btn) == HIGH;
+}
+
+
+/**
+ * Check buttons and set state accordingly.
+ */
+boolean set_state() {
+
+  byte old_state = state;
+
+  if (on(BTN_STOP)) {
+    state = STATE_WAIT;
+  } else if (on(BTN_CALIBRATE)) {
+    state = STATE_CALIBRATE;
+  } else if (on(BTN_FILL)) {
+    state = STATE_FILL;
+  } else if (on(BTN_FLUSH)) {
+    state = STATE_FLUSH;
+  }
+
+  return state != old_state;
+}
+
+
+void startPump() {
+  analogWrite(PUMP, 255);
+}
+
+
+/**
+ * Set pump to half speed.
+ */
+void dimPump() {
+  analogWrite(PUMP, 128);
+}
+
+
+void stopPump() {
+  analogWrite(PUMP, 0);
+}
+
+
 void loop() {
-  // put your main code here, to run repeatedly:
-  delay(250);
-  counter += 1;
 
-  analogWrite(pinOutPump, 0);
+  boolean changed = set_state();
 
-  buttonstate = digitalRead(pinInPanic);
-
-  if (buttonstate == HIGH){
-    Serial.println("ik ben high"); 
-  } else {
-    Serial.println("ik ben looow");     
+  if (state == STATE_FILL && changed) {
+    startPump();
+    log("Filling");    
+  } else if (state == STATE_WAIT && changed) {
+    stopPump();
+    log("Stopped");    
+  } else if (state == STATE_CALIBRATE) {
+    calibrate();
+    state = STATE_WAIT;
+  } else if (state == STATE_FLUSH && changed) {
+    log("Flushing");
+    startPump();
   }
 
-//   buttonstate = digitalRead(pinInCalibrate);
+  if (state == STATE_FILL) {
 
+    float weight = get_weight();
 
-  
-//  if (state == STATE_PANIC){
-//    state = STATE_WAIT;
-//    Serial.println("PANIC");
-//    analogWrite(pinOutPump, 0);
-//    digitalWrite(pinOutLedPanic, HIGH);
-//    // tone(pinOutPiezo, 1000, 300);
-//    delay(400);
-//    digitalWrite(pinOutLedPanic, LOW);
-//    //tone(pinOutPiezo, 900, 200);
-//    delay(300);
-//    digitalWrite(pinOutLedPanic, HIGH);
-//    //tone(pinOutPiezo, 900, 200);
-//    delay(300);
-//    digitalWrite(pinOutLedPanic, LOW);
-//    delay(300);
-//  }
+    // Print % filled on second line
+    screen2(String(int(weight / MAX_WEIGHT) * 100) + "%");
 
-  Serial.print("one reading:\t");
-  Serial.println(scale.read() - tarra);
-
-  if ( (scale.read() - tarra) > 100000) {
-    Serial.print("zwaar!! : ");
-    int mapped = map(scale.read() - tarra, -10000, 500000, 0, 900);
-    Serial.println(mapped);
-    analogWrite(pinOutPump, mapped);
-    delay(2000);
+    if (weight >= MAX_WEIGHT) {
+      screen2("Full");
+      stopPump();
+      state = STATE_WAIT;
+    } else if (weight > (MAX_WEIGHT * 0.8)) {
+      dimPump();
+    }
   }
-  
+
   delay(500);
 }
