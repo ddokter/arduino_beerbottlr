@@ -26,14 +26,15 @@ const byte STATE_WAIT = 1;
 const byte STATE_FILL = 2;
 const byte STATE_CALIBRATE = 3;
 const byte STATE_FLUSH = 4;
+const byte STATE_RESET = 5;
 
 volatile byte state = STATE_WAIT;
 
 // How many scale samples should we take for calibration?
-int N_SCALE_SAMPLES = 20;
+int N_SCALE_SAMPLES = 10;
 
-float TARE = 0.0;
-float MAX_WEIGHT = 0.0;
+long WEIGHT = 0;
+long TARE = 0;
 
 
 /**
@@ -85,7 +86,7 @@ void setup() {
   lcd.begin();
   lcd.backlight();
 
-  log("Bottelmachine MK6.66");
+  screen("Bottelmachine MK6.66");
 
   delay(2000);
 
@@ -101,56 +102,62 @@ void setup() {
   // interrupt #1 = digital pin 3 (on Uno)
   // attachInterrupt(0, panic, RISING);
 
-  calibrate_tare();
-
   delay(1000);
-}
 
-
-void calibrate_tare() {
-
-  log_and_screen("Calibrating tare...");
-
-  TARE = 0.0;
-
-  // Do 20 readings and take the average as the tare
-  for (int i = 0; i < N_SCALE_SAMPLES; i++){
-    TARE += scale.read();
-  }
-
-  TARE = TARE / float(N_SCALE_SAMPLES);
-
-  log_and_screen2("Tare: " + String(TARE));  
+  TARE = get_tare();
 }
 
 
 /**
- * Determine the weight of one bottle, filled
+ * Take N readings and set average as tare.
+ */
+long get_tare() {
+
+  log_and_screen("Calibrating tare...");
+
+  long tare = 0;
+
+  for (int i = 0; i < N_SCALE_SAMPLES; i++){
+    tare += scale.read();
+    log(String(tare));
+    screen2(String(i));
+  }
+
+  tare = tare / N_SCALE_SAMPLES;
+
+  log_and_screen2("Tare: " + String(tare));
+
+  return tare;
+}
+
+
+/**
+ * Calibrate with the desired fill weight.
  */
 void calibrate() {
 
   log_and_screen("Calibrating fill weight...");
 
-  MAX_WEIGHT = 0.0;
+  long max_weight = 0;
 
-  // Do 20 readings and take the average as the fill weight
   for (int i = 0; i < N_SCALE_SAMPLES; i++){
-    MAX_WEIGHT += scale.read();
+    max_weight += (scale.read() - TARE);
+    log(String(max_weight));
   }
 
-  MAX_WEIGHT = (MAX_WEIGHT / float(N_SCALE_SAMPLES)) - TARE;
+  WEIGHT = max_weight / N_SCALE_SAMPLES;
 
-  log_and_screen2("Fill weight: " + String(MAX_WEIGHT));
+  log_and_screen2("Weight: " + String(WEIGHT));
 }
 
 
-float get_weight() {
+float get_weight(long tare) {
 
-  return scale.read() - TARE;
+  return scale.read() - tare;
 }
 
 
-boolean on(int btn) {
+boolean is_on(int btn) {
 
   return digitalRead(btn) == HIGH;
 }
@@ -163,13 +170,15 @@ boolean set_state() {
 
   byte old_state = state;
 
-  if (on(BTN_STOP)) {
+  if (is_on(BTN_FILL) && is_on(BTN_FLUSH)) {
+    state = STATE_RESET;
+  } else if (is_on(BTN_STOP)) {
     state = STATE_WAIT;
-  } else if (on(BTN_CALIBRATE)) {
+  } else if (is_on(BTN_CALIBRATE)) {
     state = STATE_CALIBRATE;
-  } else if (on(BTN_FILL)) {
+  } else if (is_on(BTN_FILL)) {
     state = STATE_FILL;
-  } else if (on(BTN_FLUSH)) {
+  } else if (is_on(BTN_FLUSH)) {
     state = STATE_FLUSH;
   }
 
@@ -195,38 +204,63 @@ void stopPump() {
 }
 
 
+void fill() {
+
+  long tare = get_tare();
+
+  screen("Filling");
+
+  startPump();
+
+  long weight = get_weight(tare);
+
+  while(weight < WEIGHT) {
+
+    // Print % filled on second line
+    log_and_screen2(String(int((float(weight) / float(WEIGHT)) * 100)) + "%");
+
+    if (weight > (WEIGHT * 0.8)) {
+      dimPump();
+    }
+
+    weight = get_weight(tare);
+  }
+
+  stopPump();
+
+  log_and_screen2("Full");
+}
+
+
+void reset() {
+
+  screen("Resetting");
+
+  delay(1000);
+
+  TARE = get_tare();
+}
+
+
 void loop() {
 
   boolean changed = set_state();
 
-  if (state == STATE_FILL && changed) {
-    startPump();
-    log("Filling");    
+  if (state == STATE_RESET) {
+    reset();
+    state = STATE_WAIT;
+  } else if (state == STATE_FILL && changed) {
+    fill();
+    state = STATE_WAIT;
   } else if (state == STATE_WAIT && changed) {
     stopPump();
-    log("Stopped");    
+    screen("Stopped");
   } else if (state == STATE_CALIBRATE) {
     calibrate();
     state = STATE_WAIT;
   } else if (state == STATE_FLUSH && changed) {
-    log("Flushing");
+    screen("Flushing");
     startPump();
-  }
-
-  if (state == STATE_FILL) {
-
-    float weight = get_weight();
-
-    // Print % filled on second line
-    screen2(String(int(weight / MAX_WEIGHT) * 100) + "%");
-
-    if (weight >= MAX_WEIGHT) {
-      screen2("Full");
-      stopPump();
-      state = STATE_WAIT;
-    } else if (weight > (MAX_WEIGHT * 0.8)) {
-      dimPump();
-    }
   }
 
   delay(500);
